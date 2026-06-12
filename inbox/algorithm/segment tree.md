@@ -21,6 +21,20 @@
 
 ---
 
+## 节点编号与空间复杂度
+
+采用数组存储的满二叉树编号方式（本笔记代码以 0 为根）：
+
+- 根节点：索引 `0`
+- 节点 `i` 的左孩子：`2*i + 1`，右孩子：`2*i + 2`
+- 节点 `i` 的父节点：`(i - 1) / 2`
+
+**为什么要开 4n 空间？**
+
+线段树的深度为 `⌈log₂n⌉ + 1`。当 n 不是 2 的幂时，最后一层会"溢出"到下一层，数组存储需要按满二叉树预留空间，即 `2^(⌈log₂n⌉+1)` 个节点。最坏情况（如 n = 2^k + 1）约为 4n，因此惯例直接开 `4 * n`，省去精确计算。
+
+---
+
 ## 基本操作
 
 | 操作 | 时间复杂度 | 说明 |
@@ -29,6 +43,24 @@
 | 单点更新 | O(log n) | 修改一个元素，更新路径上的所有节点 |
 | 区间查询 | O(log n) | 查询某区间的聚合值 |
 | 区间更新 | O(log n) | 使用懒标记（Lazy Propagation） |
+
+---
+
+## 懒标记（Lazy Propagation）
+
+**问题**：区间更新（如"把 [l, r] 内每个元素都加 v"）若逐个单点更新，复杂度退化为 O(n log n)。
+
+**思路**：更新时只下沉到"被查询区间完全覆盖"的节点，在该节点打上一个**懒标记**，表示"这棵子树整体需要加 v，但还没真正传给孩子"。之后**真正需要访问其孩子时**（查询或更新经过该节点），才把标记下推（push down）一层。
+
+三个关键动作：
+
+1. **打标记**：节点区间被更新区间完全覆盖时，更新自身聚合值 + 记录懒标记，立即返回（不再递归）。
+2. **下推（push down）**：访问孩子前，把当前节点的懒标记应用到两个孩子（更新孩子的聚合值和懒标记），然后清空自己的标记。
+3. **上推（push up）**：孩子更新完后，由孩子的值重新计算当前节点的聚合值。
+
+这样单次区间更新只触碰 O(log n) 个节点。
+
+> 注意：懒标记的"叠加"必须满足结合性。区间加法标记可以直接累加；若同时支持"区间赋值 + 区间加"两种标记，需要规定优先级（赋值会清空加法标记）。
 
 ---
 
@@ -51,7 +83,7 @@
 
 ---
 
-## 简单代码示例（Rust）
+## 代码示例一：单点更新 + 区间查询（Rust）
 
 ```rust
 /// 线段树结构体，同时维护区间最大值和最小值
@@ -231,4 +263,153 @@ fn main() {
 }
 
 ```
+
+---
+
+## 代码示例二：区间更新（懒标记）+ 区间求和（Rust）
+
+```rust
+/// 支持区间加法 + 区间求和的线段树（带懒标记）
+/// 节点编号方式与示例一相同：根为 0，孩子为 2i+1 / 2i+2
+struct LazySegmentTree {
+    n: usize,
+    sum: Vec<i64>,   // 每个节点存储区间和
+    lazy: Vec<i64>,  // 懒标记：该子树整体待加的值（0 表示无标记）
+}
+
+impl LazySegmentTree {
+    pub fn new(vector: &[i64]) -> LazySegmentTree {
+        let n = vector.len();
+        let mut st = LazySegmentTree {
+            n,
+            sum: vec![0; 4 * n],
+            lazy: vec![0; 4 * n],
+        };
+        st.build(vector, 0, 0, n - 1);
+        st
+    }
+
+    fn build(&mut self, vector: &[i64], index: usize, left: usize, right: usize) {
+        if left == right {
+            self.sum[index] = vector[left];
+            return;
+        }
+        let mid = (left + right) / 2;
+        self.build(vector, index * 2 + 1, left, mid);
+        self.build(vector, index * 2 + 2, mid + 1, right);
+        // push up：由孩子重新计算当前节点
+        self.sum[index] = self.sum[index * 2 + 1] + self.sum[index * 2 + 2];
+    }
+
+    /// push down：访问孩子之前，把当前节点的懒标记下推一层
+    /// left_len / right_len 分别是左右孩子区间的长度（求和需要乘以区间长度）
+    fn push_down(&mut self, index: usize, left_len: usize, right_len: usize) {
+        if self.lazy[index] != 0 {
+            let add = self.lazy[index];
+            // 标记传给孩子（孩子的标记是"累加"，不能直接覆盖）
+            self.lazy[index * 2 + 1] += add;
+            self.lazy[index * 2 + 2] += add;
+            // 同时更新孩子的聚合值
+            self.sum[index * 2 + 1] += add * left_len as i64;
+            self.sum[index * 2 + 2] += add * right_len as i64;
+            // 清空自己的标记
+            self.lazy[index] = 0;
+        }
+    }
+
+    fn update(&mut self, index: usize, left: usize, right: usize,
+              ql: usize, qr: usize, add: i64) {
+        // 完全覆盖：更新自身 + 打懒标记，不再向下递归
+        if ql <= left && right <= qr {
+            self.sum[index] += add * (right - left + 1) as i64;
+            self.lazy[index] += add;
+            return;
+        }
+        let mid = (left + right) / 2;
+        self.push_down(index, mid - left + 1, right - mid);
+        if ql <= mid {
+            self.update(index * 2 + 1, left, mid, ql, qr, add);
+        }
+        if qr > mid {
+            self.update(index * 2 + 2, mid + 1, right, ql, qr, add);
+        }
+        self.sum[index] = self.sum[index * 2 + 1] + self.sum[index * 2 + 2];
+    }
+
+    fn query(&mut self, index: usize, left: usize, right: usize,
+             ql: usize, qr: usize) -> i64 {
+        if ql <= left && right <= qr {
+            return self.sum[index];
+        }
+        let mid = (left + right) / 2;
+        // 查询同样要先下推标记，否则孩子的值是"过期"的
+        self.push_down(index, mid - left + 1, right - mid);
+        let mut result = 0;
+        if ql <= mid {
+            result += self.query(index * 2 + 1, left, mid, ql, qr);
+        }
+        if qr > mid {
+            result += self.query(index * 2 + 2, mid + 1, right, ql, qr);
+        }
+        result
+    }
+
+    /// 公共接口：区间 [l, r] 每个元素加 add
+    pub fn range_add(&mut self, l: usize, r: usize, add: i64) {
+        self.update(0, 0, self.n - 1, l, r, add);
+    }
+
+    /// 公共接口：查询区间 [l, r] 的和
+    pub fn range_sum(&mut self, l: usize, r: usize) -> i64 {
+        self.query(0, 0, self.n - 1, l, r)
+    }
+}
+
+fn main() {
+    let arr = vec![1, 3, 5, 7, 9, 11];
+    let mut st = LazySegmentTree::new(&arr);
+
+    println!("初始 [0,5] 和 = {}", st.range_sum(0, 5)); // 36
+
+    st.range_add(1, 3, 10); // [1, 13, 15, 17, 9, 11]
+    println!("区间加后 [0,5] 和 = {}", st.range_sum(0, 5)); // 66
+    println!("区间加后 [2,4] 和 = {}", st.range_sum(2, 4)); // 41
+}
+```
+
+---
+
+## 常见易错点
+
+1. **中点溢出**：`(left + right) / 2` 在 left、right 极大时可能溢出，更稳妥的写法是 `left + (right - left) / 2`（Rust 中 usize 区间一般不会溢出，但 C/C++ 的 int 很容易踩坑）。
+2. **无交集时的返回值**：必须返回该操作的**单位元**（求和返回 0，求最大值返回 `i32::MIN`，求最小值返回 `i32::MAX`，求 GCD 返回 0），否则会污染合并结果。
+3. **查询前忘记 push down**：懒标记版本中，查询路径经过有标记的节点时也必须下推，否则读到的是过期数据。
+4. **标记是累加还是覆盖**：区间加标记下推时用 `+=`；区间赋值标记用覆盖，且需要额外的"是否有标记"判断（赋值 0 是合法标记，不能用 0 表示无标记）。
+5. **空数组**：`n == 0` 时 `n - 1` 会下溢（usize），构造前应特判。
+6. **求和溢出**：区间和容易超出 i32 范围，聚合值建议用 i64（如示例二）。
+
+---
+
+## 进阶变体
+
+| 变体 | 解决的问题 | 核心思路 |
+|------|-----------|---------|
+| **动态开点线段树** | 值域很大（如 1e9）但操作次数少，无法预分配 4n 数组 | 按需创建节点，用索引/指针引用孩子，空间 O(q log V) |
+| **可持久化线段树（主席树）** | 查询"历史版本"或区间第 k 小 | 每次修改只新建路径上的 O(log n) 个节点，旧版本节点共享 |
+| **zkw 线段树（迭代版）** | 递归常数大 | 自底向上非递归实现，代码短、常数小，但不易扩展懒标记 |
+| **线段树合并** | 树上启发式合并类问题 | 递归合并两棵动态开点线段树 |
+| **线段树二分** | "查询第一个满足条件的位置" | 利用节点聚合值在树上直接二分，O(log n) 而非 O(log² n) |
+| **扫描线 + 线段树** | 矩形面积并、周长并 | 按 x 扫描，线段树维护 y 方向被覆盖的长度 |
+
+---
+
+## 经典练习题
+
+- [LeetCode 307. 区域和检索 - 数组可修改](https://leetcode.cn/problems/range-sum-query-mutable/) — 单点更新 + 区间求和（入门模板题）
+- [LeetCode 715. Range 模块](https://leetcode.cn/problems/range-module/) — 区间赋值 + 动态开点
+- [LeetCode 729/731/732. 我的日程安排表 I/II/III](https://leetcode.cn/problems/my-calendar-iii/) — 区间加 + 区间最大值 + 动态开点
+- [LeetCode 315. 计算右侧小于当前元素的个数](https://leetcode.cn/problems/count-of-smaller-numbers-after-self/) — 值域线段树/离散化
+- [LeetCode 2407. 最长递增子序列 II](https://leetcode.cn/problems/longest-increasing-subsequence-ii/) — 线段树优化 DP
+- [洛谷 P3372 【模板】线段树 1](https://www.luogu.com.cn/problem/P3372) — 区间加 + 区间求和（懒标记模板题）
+- [洛谷 P3373 【模板】线段树 2](https://www.luogu.com.cn/problem/P3373) — 区间加 + 区间乘（双懒标记）
 
